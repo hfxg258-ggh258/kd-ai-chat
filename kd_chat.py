@@ -7,10 +7,13 @@ from langchain_core.output_parsers import BaseOutputParser
 from langchain_core.messages import get_buffer_string
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
-from langchain.memory import ConversationBufferMemory
+
+# 使用 langchain_classic 替代原 langchain.memory（解决版本兼容问题）
+from langchain_classic.memory import ConversationBufferMemory
+
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import CharacterTextSplitter   # 修改这一行
+from langchain_text_splitters import CharacterTextSplitter
 
 # ===== 1. 自定义输出解释器 =====
 class KDStyleOutputParser(BaseOutputParser[str]):
@@ -20,7 +23,7 @@ class KDStyleOutputParser(BaseOutputParser[str]):
             return "抱歉，我现在无法思考清楚。请再问一次！🏀"
         return f"🏀 **KD** 说道：\n\n{cleaned}\n\n---\n*#EasyMoneySniper* 🎯"
 
-# ===== 2. 构建 RAG 向量库 =====
+# ===== 2. 构建 RAG 向量库（使用轻量模型，减少部署内存）=====
 @st.cache_resource
 def build_kd_vectorstore():
     kd_docs = [
@@ -45,7 +48,16 @@ def build_kd_vectorstore():
     documents = [Document(page_content=doc) for doc in kd_docs]
     text_splitter = CharacterTextSplitter(chunk_size=300, chunk_overlap=50)
     split_docs = text_splitter.split_documents(documents)
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    
+    # 使用更轻量的 ONNX 模型，减少部署内存占用
+    try:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="Xenova/all-MiniLM-L6-v2",
+            model_kwargs={'trust_remote_code': True}
+        )
+    except Exception:
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    
     vectorstore = FAISS.from_documents(split_docs, embeddings)
     return vectorstore.as_retriever(search_kwargs={"k": 3})
 

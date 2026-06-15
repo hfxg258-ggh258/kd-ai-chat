@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+凯文·杜兰特 AI 对话助手
+技术栈：提示词模板、输出解释器、Chain链、Memory、RAG（本地TF-IDF）
+基于 LangChain 0.3.0 + Streamlit
+"""
+
 import streamlit as st
 import os
 import numpy as np
@@ -9,28 +16,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain.memory import ConversationBufferMemory
 
-# ========== 1. 输出解释器 ==========
-class KDStyleOutputParser(StrOutputParser):
-    def parse(self, text: str) -> str:
-        cleaned = text.strip()
-        if not cleaned:
-            return "抱歉，我现在无法思考清楚。请再问一次！🏀"
-        return f"🏀 **KD** 说道：\n\n{cleaned}\n\n---\n*#EasyMoneySniper* 🎯"
-
-# ========== 2. 本地 RAG 检索器（基于 TF-IDF） ==========
-class LocalTFIDFRetriever:
-    def __init__(self, documents):
-        self.documents = documents
-        self.vectorizer = TfidfVectorizer()
-        self.doc_vectors = self.vectorizer.fit_transform(documents)
-    
-    def retrieve(self, query, k=3):
-        query_vec = self.vectorizer.transform([query])
-        scores = cosine_similarity(query_vec, self.doc_vectors).flatten()
-        top_indices = np.argsort(scores)[-k:][::-1]
-        return [self.documents[i] for i in top_indices]
-
-# 知识库文档（凯文·杜兰特相关信息）
+# ========================= 1. 本地 RAG 检索器（TF-IDF）=========================
 KD_KNOWLEDGE = [
     "凯文·杜兰特 1988年9月29日出生于美国华盛顿特区，绰号'KD'、'死神'。",
     "2007年NBA选秀以榜眼身份被西雅图超音速队选中，获最佳新秀。",
@@ -47,41 +33,60 @@ KD_KNOWLEDGE = [
     "帮助美国队夺得4枚奥运金牌。"
 ]
 
+class TFIDFRetriever:
+    def __init__(self, documents):
+        self.documents = documents
+        self.vectorizer = TfidfVectorizer()
+        self.doc_vectors = self.vectorizer.fit_transform(documents)
+    def get_relevant_documents(self, query, k=3):
+        query_vec = self.vectorizer.transform([query])
+        scores = cosine_similarity(query_vec, self.doc_vectors).flatten()
+        top_indices = np.argsort(scores)[-k:][::-1]
+        return [self.documents[i] for i in top_indices]
+
+# 缓存检索器实例
 @st.cache_resource
 def get_retriever():
-    return LocalTFIDFRetriever(KD_KNOWLEDGE)
+    return TFIDFRetriever(KD_KNOWLEDGE)
 
-# ========== 3. 构建 Chain ==========
+# ========================= 2. 输出解释器 =========================
+class KDStyleOutputParser(StrOutputParser):
+    """自定义输出解析器，添加 KD 风格前缀和标签"""
+    def parse(self, text: str) -> str:
+        cleaned = text.strip()
+        if not cleaned:
+            return "抱歉，我现在无法思考清楚。请再问一次！🏀"
+        return f"🏀 **KD** 说道：\n\n{cleaned}\n\n---\n*#EasyMoneySniper* 🎯"
+
+# ========================= 3. 构建 Chain =========================
 def build_chain(retriever, memory, output_parser, llm):
-    system_template = """
+    # 提示词模板（包含系统消息、历史占位符、用户问题）
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """
 你是一位精通篮球的AI助手，专门以篮球巨星凯文·杜兰特（Kevin Durant）的身份或视角回答问题。
-请严格基于以下【知识库检索结果】进行回答。如果检索结果不足以回答问题，可以结合你自己的常识。
+请严格基于以下【检索到的相关知识】进行回答。如果检索内容不足以回答问题，可以结合你自己的常识，但不要编造明显错误的事实。
 
-【知识库检索结果】
+【检索到的相关知识】
 {context}
 
-用户问题：{question}
-"""
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_template),
+"""),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{question}")
     ])
 
-    def get_chat_history(_inputs):
-        if memory and hasattr(memory, "load_memory_variables"):
-            mem_vars = memory.load_memory_variables({})
-            if "history" in mem_vars:
-                return mem_vars["history"]
-        return []
+    # 从 memory 中提取历史消息
+    def get_history(_):
+        return memory.load_memory_variables({})["history"]
 
+    # 从检索器获取上下文
     def retrieve_context(question):
-        docs = retriever.retrieve(question, k=3)
+        docs = retriever.get_relevant_documents(question)
         return "\n\n".join(docs)
 
+    # LCEL 链式调用
     chain = (
         RunnablePassthrough.assign(
-            history=lambda x: get_chat_history(x),
+            history=get_history,
             context=lambda x: retrieve_context(x["question"])
         )
         | prompt
@@ -90,10 +95,11 @@ def build_chain(retriever, memory, output_parser, llm):
     )
     return chain
 
-# ========== 4. 主界面 ==========
+# ========================= 4. Streamlit 界面 =========================
 def main():
-    st.set_page_config(page_title="KD AI - 本地RAG版", page_icon="🏀", layout="wide")
+    st.set_page_config(page_title="KD AI - RAG增强版", page_icon="🏀", layout="wide")
 
+    # 侧边栏配置
     with st.sidebar:
         st.image("https://cdn.nba.com/headshots/nba/latest/1040x760/201142.png", width=100, caption="Kevin Durant")
         st.title("⚙️ 模型设置")
@@ -106,25 +112,30 @@ def main():
         temperature = st.slider("temperature", 0.0, 1.5, 0.7)
         if st.button("🧹 清空对话", use_container_width=True):
             st.session_state.messages = []
-            st.session_state.memory = ConversationBufferMemory(return_messages=True)
+            st.session_state.memory.clear()
             st.rerun()
         st.divider()
-        st.info("✅ 本地 RAG 检索（TF‑IDF） + 对话记忆")
+        st.markdown("**🏆 技术栈**")
+        st.info("✅ 提示词模板\n✅ 输出解释器\n✅ Chain链 (LCEL)\n✅ 对话记忆 (Memory)\n✅ RAG (TF-IDF 本地检索)")
 
-    st.title("🏀 凯文·杜兰特 AI 助手（本地RAG版）")
-    st.caption("知识库包含杜兰特生涯数据，无需外部 Embedding API，完全本地运行。")
+    st.title("🏀 凯文·杜兰特 AI 助手（RAG增强版）")
+    st.caption("知识库包含杜兰特生涯数据，使用本地 TF-IDF 检索增强生成。")
 
+    # 初始化 session state
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "memory" not in st.session_state:
-        st.session_state.memory = ConversationBufferMemory(return_messages=True)
-    if "retriever" not in st.session_state:
-        st.session_state.retriever = get_retriever()
+        st.session_state.memory = ConversationBufferMemory(return_messages=True, memory_key="history")
 
+    # 检查 API Key
     if not api_key:
         st.warning("⚠️ 请在上方侧边栏输入 DeepSeek API Key 以开始对话。")
         st.stop()
 
+    # 初始化检索器
+    retriever = get_retriever()
+
+    # 初始化 LLM 和 Chain
     llm = ChatOpenAI(
         model=model_name,
         temperature=temperature,
@@ -132,22 +143,29 @@ def main():
         base_url=base_url
     )
     parser = KDStyleOutputParser()
-    chain = build_chain(st.session_state.retriever, st.session_state.memory, parser, llm)
+    chain = build_chain(retriever, st.session_state.memory, parser, llm)
 
+    # 显示历史消息
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"], avatar="🏀" if msg["role"]=="assistant" else None):
+        with st.chat_message(msg["role"], avatar="🏀" if msg["role"] == "assistant" else None):
             st.markdown(msg["content"])
 
-    if prompt := st.chat_input("请输入关于凯文·杜兰特的问题"):
+    # 用户输入
+    if prompt := st.chat_input("请输入关于凯文·杜兰特的问题，例如：杜兰特跟腱断裂是哪一年？"):
+        # 添加用户消息
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
+
+        # 调用 Chain
         with st.chat_message("assistant", avatar="🏀"):
             with st.spinner("检索知识库并生成回答..."):
                 try:
                     response = chain.invoke({"question": prompt})
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
+                    # 注意：memory 已经在 chain 内部自动更新？需要手动添加以确保同步
+                    # 由于我们使用了 MessagesPlaceholder，memory 不会自动添加，需手动
                     st.session_state.memory.chat_memory.add_user_message(prompt)
                     st.session_state.memory.chat_memory.add_ai_message(response)
                 except Exception as e:

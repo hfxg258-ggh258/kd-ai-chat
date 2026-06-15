@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import os
-import re
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import BaseOutputParser
 from langchain_core.messages import get_buffer_string
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
-from langchain.memory import ConversationBufferMemory
+
+# 关键修正：使用 langchain_classic 替代已废弃的 langchain.memory
+from langchain_classic.memory import ConversationBufferMemory
+
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import CharacterTextSplitter
-from langchain_community.tools import DuckDuckGoSearchRun
 
 # ===== 1. 自定义输出解释器 =====
 class KDStyleOutputParser(BaseOutputParser[str]):
@@ -22,7 +23,7 @@ class KDStyleOutputParser(BaseOutputParser[str]):
             return "抱歉，我现在无法思考清楚。请再问一次！🏀"
         return f"🏀 **KD** 说道：\n\n{cleaned}\n\n---\n*#EasyMoneySniper* 🎯"
 
-# ===== 2. 构建 RAG 向量库（静态知识）=====
+# ===== 2. 构建 RAG 向量库 =====
 @st.cache_resource
 def build_kd_vectorstore():
     kd_docs = [
@@ -51,60 +52,28 @@ def build_kd_vectorstore():
     vectorstore = FAISS.from_documents(split_docs, embeddings)
     return vectorstore.as_retriever(search_kwargs={"k": 3})
 
-# ===== 3. 实时搜索函数（使用 DuckDuckGo，免费）=====
-def search_latest_news(query: str) -> str:
-    """
-    搜索关于凯文·杜兰特的最新信息
-    """
-    try:
-        search_tool = DuckDuckGoSearchRun()
-        # 限定搜索关键词为杜兰特相关
-        search_query = f"Kevin Durant 凯文杜兰特 最新 {query}"
-        result = search_tool.invoke(search_query)
-        # 限制结果长度，避免超出 token 限制
-        if len(result) > 2000:
-            result = result[:2000] + "...(已截断)"
-        return result
-    except Exception as e:
-        return f"搜索时出错：{str(e)}。请稍后重试。"
-
-# ===== 4. 判断是否需要实时搜索 =====
-def need_realtime_search(question: str) -> bool:
-    """
-    根据问题关键词判断是否需要联网搜索最新信息
-    """
-    keywords = ["最新", "今天", "现在", "实时", "近期", "最近", "刚刚", "本赛季", "今日", "昨晚", "上一场", "比赛结果", "数据", "新闻", "消息", "更新"]
-    return any(kw in question for kw in keywords)
-
-# ===== 5. 初始化 LLM =====
+# ===== 3. 初始化 LLM =====
 def get_llm(api_key: str, model_name: str, temperature: float, base_url: str = None):
     llm_kwargs = {"model": model_name, "temperature": temperature, "api_key": api_key}
     if base_url:
         llm_kwargs["base_url"] = base_url
     return ChatOpenAI(**llm_kwargs)
 
-# ===== 6. 构建完整 Chain（支持实时搜索）=====
+# ===== 4. 构建完整 Chain =====
 def build_chain(retriever, memory, output_parser, llm):
     system_template = """
 你是一位精通篮球的AI助手，专门以篮球巨星凯文·杜兰特（Kevin Durant）的身份或视角回答问题。
-请严格基于以下【背景知识】和【实时搜索结果】进行回答。
+请严格基于以下【背景知识】进行回答，如果背景知识不足，可以结合你自己的篮球知识，但不要编造关于杜兰特的关键事实。
 
-- 如果【实时搜索结果】不为空，请优先使用其中的最新信息回答关于杜兰特近期动态、比赛数据或新闻的问题。
-- 如果问题与最新实时信息无关，可以忽略搜索结果，主要依靠背景知识。
-- 不要编造事实，如果信息不足，请诚实地说“我不太确定，建议查看最新的体育新闻”。
-
-【背景知识】（来自历史资料）
+【背景知识】
 {context}
-
-【实时搜索结果】（来自网络，可能包含最新信息）
-{realtime_context}
 
 【对话历史】
 {chat_history}
 
 用户问题：{question}
 
-请用自然、热情的口吻回答，可以加入一点KD风格的标志性词语（比如“easy money”、“你能防住我？”等调侃感），但必须准确传达信息。
+请用自然、热情的口吻回答，可以加入一点KD风格的标志性词语（比如“easy money”、“你能防住我？”等调侃感）。
 """
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_template),
@@ -124,16 +93,9 @@ def build_chain(retriever, memory, output_parser, llm):
             return "\n\n".join([doc.page_content for doc in docs])
         return "暂无检索到的背景知识，请用你自身的篮球知识回答。"
 
-    def get_realtime_context(question):
-        if need_realtime_search(question):
-            with st.spinner("🔍 正在搜索凯文·杜兰特的最新动态..."):
-                return search_latest_news(question)
-        return "（本次问题不涉及实时信息，未进行搜索）"
-
     chain = (
         RunnablePassthrough.assign(
             context=lambda x: retrieve_context(x["question"]),
-            realtime_context=lambda x: get_realtime_context(x["question"]),
             chat_history=lambda x: get_chat_history(x)
         )
         | prompt
@@ -142,9 +104,9 @@ def build_chain(retriever, memory, output_parser, llm):
     )
     return chain
 
-# ===== 7. Streamlit 主界面 =====
+# ===== 5. Streamlit 主界面 =====
 def main():
-    st.set_page_config(page_title="KD AI - 凯文·杜兰特专属助手（实时版）", page_icon="🏀", layout="wide")
+    st.set_page_config(page_title="KD AI - 凯文·杜兰特专属助手", page_icon="🏀", layout="wide")
 
     with st.sidebar:
         st.image("https://cdn.nba.com/headshots/nba/latest/1040x760/201142.png", width=100, caption="Kevin Durant")
@@ -162,15 +124,11 @@ def main():
             st.session_state.memory = ConversationBufferMemory(return_messages=True)
             st.rerun()
         st.divider()
-        st.markdown("**🏆 关于KD AI（实时增强版）**")
-        st.info(
-            "本助手基于 LangChain + RAG + 实时搜索，能回答关于凯文·杜兰特的历史知识和最新动态。\n"
-            "当您的问题包含「最新、今天、现在、实时」等关键词时，会自动联网搜索最新信息。"
-        )
-        st.markdown("Made with ❤️ by Basketball Fan")
+        st.markdown("**🏆 关于KD AI**")
+        st.info("本助手基于 LangChain + RAG + 记忆，专门回答关于凯文·杜兰特的一切。")
 
-    st.title("🏀 凯文·杜兰特 AI 对话助手（实时版）")
-    st.caption("聊聊篮球，致敬KD — 你可以问历史知识，也可以问今天的最新比赛或新闻！")
+    st.title("🏀 凯文·杜兰特 AI 对话助手")
+    st.caption("聊聊篮球，致敬KD — 你可以问关于死神杜兰特的技术、故事、荣誉，甚至模拟和KD对话！")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -196,7 +154,7 @@ def main():
             with st.chat_message("assistant", avatar="🏀"):
                 st.markdown(msg["content"])
 
-    if prompt := st.chat_input("请输入关于凯文·杜兰特的问题（例如：杜兰特今天比赛数据？KD 最近有什么新闻？）"):
+    if prompt := st.chat_input("请输入关于凯文·杜兰特的问题，例如：杜兰特的中投为什么无解？"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)

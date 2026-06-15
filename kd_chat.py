@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-凯文·杜兰特 AI 对话助手
-技术栈：提示词模板、输出解释器、Chain链、Memory、RAG（本地TF-IDF）+ 可选实时搜索
-"""
-
 import streamlit as st
 import os
 import numpy as np
@@ -14,29 +9,18 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain.memory import ConversationBufferMemory
+from duckduckgo_search import DDGS
 
-# 尝试导入实时搜索库（如未安装，给出提示）
-try:
-    from duckduckgo_search import DDGS
-    DDGS_AVAILABLE = True
-except ImportError:
-    DDGS_AVAILABLE = False
-
-# ========================= 1. 本地 RAG 检索器（TF-IDF）=========================
-KD_KNOWLEDGE = [
-    "凯文·杜兰特 1988年9月29日出生于美国华盛顿特区，绰号'KD'、'死神'。",
-    "2007年NBA选秀以榜眼身份被西雅图超音速队选中，获最佳新秀。",
-    "2014年荣获NBA常规赛MVP，演讲'你才是真正的MVP'感人至深。",
-    "4次获得NBA得分王，历史顶级得分手。",
-    "2016年加盟金州勇士队，2017、2018年连续夺冠并获总决赛MVP。",
-    "2019年总决赛跟腱断裂重伤，康复后仍保持巅峰状态。",
-    "2021年助美国男篮夺东京奥运会金牌，成队史奥运得分王。",
-    "生涯荣誉：2次总冠军、2次FMVP、1次MVP、4次得分王、13次全明星。",
-    "身高208cm，臂展225cm，招牌干拔跳投和变向突破。",
-    "名言：'Hard work beats talent when talent fails to work hard.'",
-    "2023年被交易至菲尼克斯太阳队，与布克、比尔组成三巨头。",
-    "生涯总得分历史前十，季后赛关键球能力顶级。",
-    "帮助美国队夺得4枚奥运金牌。"
+# ========================= 静态知识库（仅作备用）=========================
+STATIC_KNOWLEDGE = [
+    "凯文·杜兰特 1988年9月29日出生，绰号'KD'、'死神'。",
+    "2007年NBA选秀榜眼，最佳新秀。",
+    "2014年MVP，4次得分王。",
+    "2017、2018年勇士队总冠军+FMVP。",
+    "2019年跟腱断裂。",
+    "2021年奥运金牌。",
+    "生涯总得分历史前十。",
+    "2023年被交易至太阳队。",  # 此条可能过时，但会被实时搜索覆盖
 ]
 
 class TFIDFRetriever:
@@ -52,47 +36,64 @@ class TFIDFRetriever:
 
 @st.cache_resource
 def get_retriever():
-    return TFIDFRetriever(KD_KNOWLEDGE)
+    return TFIDFRetriever(STATIC_KNOWLEDGE)
 
-# ========================= 2. 实时搜索功能 =========================
-def search_realtime(query):
-    """使用 DuckDuckGo 搜索关于凯文·杜兰特的最新信息"""
-    if not DDGS_AVAILABLE:
-        return "实时搜索库未安装，请运行 pip install duckduckgo-search"
+# ========================= 实时搜索（优先）=========================
+def search_duckduckgo(query):
+    """搜索杜兰特最新信息，返回字符串摘要"""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(f"Kevin Durant {query} 凯文杜兰特 最新", max_results=3))
+            # 限定搜索关键词，获取新闻类结果
+            results = list(ddgs.text(f"凯文杜兰特 最新消息 {query}", max_results=3))
             if not results:
-                return "未找到相关实时信息。"
-            snippets = [r["body"] for r in results]
-            return "\n\n".join(snippets)
+                # 尝试英文搜索
+                results = list(ddgs.text(f"Kevin Durant latest news {query}", max_results=3))
+            if results:
+                snippets = [f"- {r['body']}" for r in results]
+                return "【实时搜索结果】\n" + "\n".join(snippets)
+            else:
+                return "【实时搜索结果】未找到最新相关信息。"
     except Exception as e:
-        return f"搜索出错: {str(e)}"
+        return f"【实时搜索结果】搜索出错: {str(e)}"
 
-# ========================= 3. 输出解释器 =========================
+# ========================= 输出解释器 =========================
 class KDStyleOutputParser(StrOutputParser):
     def parse(self, text: str) -> str:
         cleaned = text.strip()
         if not cleaned:
             return "抱歉，我现在无法思考清楚。请再问一次！🏀"
+        # 移除可能重复的 "KD 说道：" 前缀
+        if cleaned.startswith("KD 说道："):
+            cleaned = cleaned[7:].strip()
         return f"🏀 **KD** 说道：\n\n{cleaned}\n\n---\n*#EasyMoneySniper* 🎯"
 
-# ========================= 4. 构建 Chain =========================
+# ========================= 构建 Chain（实时搜索优先）=========================
 def build_chain(retriever, memory, output_parser, llm, enable_search):
-    # 提示词模板（系统消息 + 历史 + 检索上下文 + 实时搜索结果）
-    system_template = """
+    prompt_template = """
 你是一位精通篮球的AI助手，专门以篮球巨星凯文·杜兰特（Kevin Durant）的身份或视角回答问题。
-请严格基于以下信息回答，优先级：实时搜索结果（最新） > 本地知识库 > 你自己的常识。
 
-【本地知识库检索结果】
-{context}
+【重要指令】
+- 你将收到【实时搜索结果】和【本地知识库参考】两部分信息。
+- 如果【实时搜索结果】中包含与【本地知识库参考】矛盾的最新信息（例如球队归属、最新交易等），你必须**无条件采用【实时搜索结果】的内容**。
+- 你的回答应当以实时搜索结果为准，体现最新动态。如果实时搜索结果不足，再参考本地知识库或你自己的常识。
 
-【实时搜索结果（来自网络，可能是最新动态）】
+--- 以下为输入信息 ---
+
+【实时搜索结果】（最新，优先级最高）
 {realtime_context}
 
+【本地知识库参考】（可能过时，仅作辅助）
+{context}
+
+对话历史：
+{history}
+
+用户最新问题：{question}
+
+请用杜兰特的第一人称口吻自然、热情地回答，可以加一点KD标志性词语（如“easy money”）。
 """
     prompt = ChatPromptTemplate.from_messages([
-        ("system", system_template),
+        ("system", prompt_template),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{question}")
     ])
@@ -106,9 +107,9 @@ def build_chain(retriever, memory, output_parser, llm, enable_search):
 
     def get_realtime(question):
         if enable_search:
-            return search_realtime(question)
+            return search_duckduckgo(question)
         else:
-            return "（未启用实时搜索）"
+            return "（实时搜索未启用）"
 
     chain = (
         RunnablePassthrough.assign(
@@ -122,37 +123,28 @@ def build_chain(retriever, memory, output_parser, llm, enable_search):
     )
     return chain
 
-# ========================= 5. Streamlit 界面 =========================
+# ========================= Streamlit 界面 =========================
 def main():
-    st.set_page_config(page_title="KD AI - 实时RAG增强版", page_icon="🏀", layout="wide")
+    st.set_page_config(page_title="KD AI - 实时优先RAG", page_icon="🏀", layout="wide")
 
     with st.sidebar:
         st.image("https://cdn.nba.com/headshots/nba/latest/1040x760/201142.png", width=100, caption="Kevin Durant")
-        st.title("⚙️ 模型设置")
-        api_key = st.text_input("DeepSeek API Key", type="password",
-                                placeholder="不填则读取环境变量 DEEPSEEK_API_KEY")
+        st.title("⚙️ 设置")
+        api_key = st.text_input("DeepSeek API Key", type="password")
         if not api_key:
             api_key = os.getenv("DEEPSEEK_API_KEY", "")
         model_name = st.text_input("模型名称", value="deepseek-chat")
         base_url = st.text_input("API Base URL", value="https://api.deepseek.com/v1")
         temperature = st.slider("temperature", 0.0, 1.5, 0.7)
-        
-        # 实时搜索开关
-        enable_search = st.checkbox("🌐 启用实时搜索（获取最新新闻/比赛数据）", value=True)
-        if enable_search and not DDGS_AVAILABLE:
-            st.error("⚠️ 实时搜索库未安装，请运行 `pip install duckduckgo-search`")
-            enable_search = False
-        
-        if st.button("🧹 清空对话", use_container_width=True):
+        enable_search = st.checkbox("🌐 启用实时搜索（获取最新消息）", value=True)
+        if st.button("🧹 清空对话"):
             st.session_state.messages = []
             st.session_state.memory.clear()
             st.rerun()
-        st.divider()
-        st.markdown("**🏆 技术栈**")
-        st.info("✅ 提示词模板\n✅ 输出解释器\n✅ Chain链 (LCEL)\n✅ 对话记忆\n✅ 本地RAG (TF-IDF)\n✅ 实时搜索 (DuckDuckGo)")
+        st.info("实时搜索优先于本地知识库，可回答最新交易、比赛等动态。")
 
-    st.title("🏀 凯文·杜兰特 AI 助手（实时搜索增强）")
-    st.caption("本地知识库 + 实时联网搜索，回答关于杜兰特的最新动态和历史数据。")
+    st.title("🏀 凯文·杜兰特 AI 助手（实时优先）")
+    st.caption("开启实时搜索后，我会联网查找杜兰特的最新消息，并优先采用。")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -160,7 +152,7 @@ def main():
         st.session_state.memory = ConversationBufferMemory(return_messages=True, memory_key="history")
 
     if not api_key:
-        st.warning("⚠️ 请在上方侧边栏输入 DeepSeek API Key 以开始对话。")
+        st.warning("请输入 DeepSeek API Key")
         st.stop()
 
     retriever = get_retriever()
@@ -169,16 +161,15 @@ def main():
     chain = build_chain(retriever, st.session_state.memory, parser, llm, enable_search)
 
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"], avatar="🏀" if msg["role"] == "assistant" else None):
+        with st.chat_message(msg["role"], avatar="🏀" if msg["role"]=="assistant" else None):
             st.markdown(msg["content"])
 
-    if prompt := st.chat_input("请输入关于凯文·杜兰特的问题，例如：杜兰特今天有比赛吗？"):
+    if prompt := st.chat_input("提问（例如：杜兰特现在在哪支球队？）"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
-
         with st.chat_message("assistant", avatar="🏀"):
-            with st.spinner("检索知识库并搜索最新信息..."):
+            with st.spinner("正在联网搜索最新动态..." if enable_search else "思考中..."):
                 try:
                     response = chain.invoke({"question": prompt})
                     st.markdown(response)
@@ -186,11 +177,7 @@ def main():
                     st.session_state.memory.chat_memory.add_user_message(prompt)
                     st.session_state.memory.chat_memory.add_ai_message(response)
                 except Exception as e:
-                    error_msg = f"调用失败: {e}"
-                    st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                    st.session_state.memory.chat_memory.add_user_message(prompt)
-                    st.session_state.memory.chat_memory.add_ai_message(error_msg)
+                    st.error(f"错误: {e}")
 
 if __name__ == "__main__":
     main()

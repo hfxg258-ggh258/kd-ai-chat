@@ -1,4 +1,5 @@
 streamlit==1.35.0
+rich==13.7.1
 langchain==0.3.0
 langchain-openai==0.2.0
 langchain-community==0.3.0
@@ -6,7 +7,7 @@ langchain-core==0.3.63
 langchain-text-splitters==0.3.8
 faiss-cpu==1.8.0
 sentence-transformers==2.2.2
+transformers==4.36.0
 torch==2.1.0
 torchvision==0.16.0
 numpy==1.26.4
-# 移除 langchain_classic，改用 langchain 并修正导入

@@ -7,15 +7,11 @@ from langchain_core.output_parsers import BaseOutputParser
 from langchain_core.messages import get_buffer_string
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
-
-# 关键修正：使用 langchain_classic 替代已废弃的 langchain.memory
-from langchain_classic.memory import ConversationBufferMemory
-
+from langchain.memory import ConversationBufferMemory
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import CharacterTextSplitter
 
-# ===== 1. 自定义输出解释器 =====
 class KDStyleOutputParser(BaseOutputParser[str]):
     def parse(self, text: str) -> str:
         cleaned = text.strip()
@@ -23,7 +19,6 @@ class KDStyleOutputParser(BaseOutputParser[str]):
             return "抱歉，我现在无法思考清楚。请再问一次！🏀"
         return f"🏀 **KD** 说道：\n\n{cleaned}\n\n---\n*#EasyMoneySniper* 🎯"
 
-# ===== 2. 构建 RAG 向量库 =====
 @st.cache_resource
 def build_kd_vectorstore():
     kd_docs = [
@@ -52,14 +47,12 @@ def build_kd_vectorstore():
     vectorstore = FAISS.from_documents(split_docs, embeddings)
     return vectorstore.as_retriever(search_kwargs={"k": 3})
 
-# ===== 3. 初始化 LLM =====
 def get_llm(api_key: str, model_name: str, temperature: float, base_url: str = None):
     llm_kwargs = {"model": model_name, "temperature": temperature, "api_key": api_key}
     if base_url:
         llm_kwargs["base_url"] = base_url
     return ChatOpenAI(**llm_kwargs)
 
-# ===== 4. 构建完整 Chain =====
 def build_chain(retriever, memory, output_parser, llm):
     system_template = """
 你是一位精通篮球的AI助手，专门以篮球巨星凯文·杜兰特（Kevin Durant）的身份或视角回答问题。
@@ -104,7 +97,6 @@ def build_chain(retriever, memory, output_parser, llm):
     )
     return chain
 
-# ===== 5. Streamlit 主界面 =====
 def main():
     st.set_page_config(page_title="KD AI - 凯文·杜兰特专属助手", page_icon="🏀", layout="wide")
 

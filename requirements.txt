@@ -4,4 +4,3 @@ langchain-openai==0.2.0
 langchain-core==0.3.63
 scikit-learn==1.5.1
 numpy==1.26.4
-duckduckgo-search==6.3.0

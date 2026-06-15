@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import os
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import BaseOutputParser
 from langchain_core.messages import get_buffer_string
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
-from langchain.memory import ConversationBufferMemory  # 正确导入（langchain==0.3.0 可用）
-
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.memory import ConversationBufferMemory
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import CharacterTextSplitter
 
@@ -21,9 +19,9 @@ class KDStyleOutputParser(BaseOutputParser[str]):
             return "抱歉，我现在无法思考清楚。请再问一次！🏀"
         return f"🏀 **KD** 说道：\n\n{cleaned}\n\n---\n*#EasyMoneySniper* 🎯"
 
-# ===== 2. 构建 RAG 向量库 =====
+# ===== 2. 构建 RAG 向量库（使用 DeepSeek Embedding API）=====
 @st.cache_resource
-def build_kd_vectorstore():
+def build_kd_vectorstore(api_key: str, base_url: str = None):
     kd_docs = [
         "凯文·杜兰特 (Kevin Durant) 1988年9月29日出生于美国华盛顿特区，司职小前锋/大前锋，绰号'KD'、'死神'。",
         "杜兰特在2007年NBA选秀中以榜眼身份被西雅图超音速队选中，新秀赛季获得最佳新秀。",
@@ -46,7 +44,13 @@ def build_kd_vectorstore():
     documents = [Document(page_content=doc) for doc in kd_docs]
     text_splitter = CharacterTextSplitter(chunk_size=300, chunk_overlap=50)
     split_docs = text_splitter.split_documents(documents)
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    
+    # 使用 DeepSeek Embedding API（需要有效的 API Key 和 base_url）
+    embeddings = OpenAIEmbeddings(
+        model="deepseek-embed",  # DeepSeek 的 embedding 模型名称
+        openai_api_key=api_key,
+        openai_api_base=base_url if base_url else "https://api.deepseek.com/v1"
+    )
     vectorstore = FAISS.from_documents(split_docs, embeddings)
     return vectorstore.as_retriever(search_kwargs={"k": 3})
 
@@ -123,7 +127,7 @@ def main():
             st.rerun()
         st.divider()
         st.markdown("**🏆 关于KD AI**")
-        st.info("本助手基于 LangChain + RAG + 记忆，专门回答关于凯文·杜兰特的一切。")
+        st.info("本助手基于 LangChain + RAG（DeepSeek Embedding）+ 记忆，专门回答关于凯文·杜兰特的一切。")
 
     st.title("🏀 凯文·杜兰特 AI 对话助手")
     st.caption("聊聊篮球，致敬KD — 你可以问关于死神杜兰特的技术、故事、荣誉，甚至模拟和KD对话！")
@@ -132,13 +136,23 @@ def main():
         st.session_state.messages = []
     if "memory" not in st.session_state:
         st.session_state.memory = ConversationBufferMemory(return_messages=True)
+    
+    # 注意：构建 retriever 需要 api_key 和 base_url，所以必须在用户输入 API Key 之后才能构建
     if "retriever" not in st.session_state:
-        with st.spinner("🔥 加载KD知识库中 (首次运行会自动下载轻量模型)..."):
-            st.session_state.retriever = build_kd_vectorstore()
+        st.session_state.retriever = None
 
     if not api_key:
         st.warning("⚠️ 请在上方侧边栏输入 DeepSeek API Key 或 OpenAI Key 以开始对话。")
         st.stop()
+
+    # 如果还没有构建 retriever 或者配置发生了变化，重新构建
+    if st.session_state.retriever is None:
+        with st.spinner("🔥 加载KD知识库并初始化 Embedding（首次需要向量化，请稍候）..."):
+            try:
+                st.session_state.retriever = build_kd_vectorstore(api_key, base_url)
+            except Exception as e:
+                st.error(f"初始化向量库失败: {e}。请检查 API Key 是否正确以及是否支持 Embedding API。")
+                st.stop()
 
     llm = get_llm(api_key, model_name, temperature, base_url if base_url else None)
     output_parser = KDStyleOutputParser()

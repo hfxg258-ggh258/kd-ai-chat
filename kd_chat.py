@@ -132,7 +132,7 @@ def main():
     
     with st.sidebar:
         st.image("https://cdn.nba.com/headshots/nba/latest/1040x760/201142.png", width=100)
-        st.title("⚙️ 模型与知识库")
+        st.title("⚙️ 模型配置")
         
         api_key = st.text_input("DeepSeek API Key", type="password",
                                 placeholder="不填则读取环境变量 DEEPSEEK_API_KEY")
@@ -144,21 +144,10 @@ def main():
         
         st.divider()
         
-        st.subheader("🏀 当前球队（手动更新以确保准确）")
-        current_team = st.text_input("请输入杜兰特现效力的球队", value="休斯敦火箭队")
-        if st.button("✅ 确认更新"):
-            st.session_state.current_team = current_team
-            st.success(f"已更新：{current_team}")
-        
-        st.divider()
-        
         if st.button("🧹 清空对话"):
             st.session_state.messages = []
             st.session_state.memory.clear()
             st.rerun()
-        
-        st.markdown("**技术实现**")
-        st.info("✅ 提示词模板 (ChatPromptTemplate)\n✅ 输出解释器 (自定义Parser)\n✅ Chain链 (LCEL)\n✅ Memory (ConversationBufferMemory)\n✅ RAG (本地TF-IDF检索)")
     
     # 主界面
     st.title("🏀 凯文·杜兰特 AI 助手")
@@ -169,14 +158,16 @@ def main():
         st.session_state.messages = []
     if "memory" not in st.session_state:
         st.session_state.memory = ConversationBufferMemory(return_messages=True, memory_key="history")
+    # 固定球队为休斯敦火箭队
+    CURRENT_TEAM = "休斯敦火箭队"
     if "current_team" not in st.session_state:
-        st.session_state.current_team = current_team  # 来自侧边栏默认值
+        st.session_state.current_team = CURRENT_TEAM
     
     if not api_key:
         st.warning("⚠️ 请在上方侧边栏输入 DeepSeek API Key。")
         st.stop()
     
-    st.info(f"📌 当前球队：**{st.session_state.current_team}** （如需更改，请在左侧修改）")
+    st.info(f"📌 当前球队：**{st.session_state.current_team}**")
     
     retriever = get_retriever()
     llm = ChatOpenAI(model=model_name, temperature=temperature, api_key=api_key, base_url=base_url)
